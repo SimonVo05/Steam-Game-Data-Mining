@@ -1,0 +1,147 @@
+﻿
+import kagglehub
+import pandas as pd
+import csv
+from pathlib import Path
+
+# 1. Download only if the dataset is not already present
+data_path = Path(__file__).resolve().parent / "data"
+data_path.mkdir(exist_ok=True)
+
+file = data_path / "games.csv"
+
+if not file.exists():
+    kagglehub.dataset_download(
+        "fronkongames/steam-games-dataset",
+        path="games.csv",
+        output_dir=str(data_path)
+    )
+
+# 2. Fix the known CSV header issue
+with open(file, encoding="utf-8-sig", newline="") as f:
+    columns = next(csv.reader(f))
+
+if "DiscountDLC count" in columns:
+    i = columns.index("DiscountDLC count")
+    columns[i:i+1] = ["Discount", "DLC count"]
+
+# 3. Read only the 10 columns we need
+keep = [
+    "AppID",
+    "Name",
+    "Genres",
+    "Tags",
+    "Price",
+    "Average playtime forever",
+    "Median playtime forever",
+    "Positive",
+    "Negative",
+    "Estimated owners"
+]
+
+games = pd.read_csv(
+    file,
+    header=0,
+    names=columns,
+    usecols=keep,
+    low_memory=False
+)
+
+print("Original shape:", games.shape)
+
+# 4. Rename columns
+games = games.rename(columns={
+    "AppID": "app_id",
+    "Name": "name",
+    "Genres": "genres",
+    "Tags": "tags",
+    "Price": "price",
+    "Average playtime forever": "avg_hours",
+    "Median playtime forever": "median_hours",
+    "Positive": "positive",
+    "Negative": "negative",
+    "Estimated owners": "estimated_owners"
+})
+
+# 5. Clean data
+games = games.drop_duplicates(subset="app_id")
+games = games.dropna(subset=[
+    "name", "genres", "price", "avg_hours"
+])
+
+games = games[
+    (games["price"] > 0) &
+    (games["avg_hours"] > 0) &
+    (games["genres"].str.strip() != "")
+].copy()
+
+# Convert minutes to hours
+games["avg_hours"] = games["avg_hours"] / 60
+games["median_hours"] = games["median_hours"] / 60
+
+# Keep missing tags as empty strings
+games["tags"] = games["tags"].fillna("")
+
+# 6. Save the cleaned dataset
+games.to_csv(
+    "data/steam_games_clean.csv",
+    index=False,
+    header=True
+)
+
+print("Cleaned shape:", games.shape)
+print(games.head(10).to_string(index=False))
+
+
+print(games[["price", "avg_hours", "median_hours"]].describe())
+
+print("\nGames with no reviews:")
+print(((games["positive"] + games["negative"]) == 0).sum())
+
+print("\nGames without tags:")
+print((games["tags"].str.strip() == "").sum())
+
+print("\nTop 10 games by average playtime:")
+print(
+    games.nlargest(10, "avg_hours")[
+        ["name", "price", "avg_hours", "positive", "negative"]
+    ].to_string(index=False)
+)
+
+
+
+# Only include games with at least 20 reviews
+games_filtered = games[
+    (games["positive"] + games["negative"]) >= 20
+].copy()
+
+# Calculate value: hours played per dollar
+games_filtered["hours_per_dollar"] = (
+    games_filtered["avg_hours"] / games_filtered["price"]
+)
+
+# Separate games into individual genres
+genre_data = games_filtered.assign(
+    genre=games_filtered["genres"].str.split(",")
+).explode("genre")
+
+genre_data["genre"] = genre_data["genre"].str.strip()
+
+# Compare median value across genres
+genre_results = genre_data.groupby("genre").agg(
+    game_count=("app_id", "nunique"),
+    median_price=("price", "median"),
+    median_hours=("avg_hours", "median"),
+    median_value=("hours_per_dollar", "median")
+)
+
+# Require at least 50 games per genre
+genre_results = genre_results[
+    genre_results["game_count"] >= 50
+]
+
+print(
+    genre_results.sort_values(
+        "median_value", ascending=False
+    ).round(2).to_string()
+)
