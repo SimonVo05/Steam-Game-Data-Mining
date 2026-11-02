@@ -64,23 +64,45 @@ games = games.rename(columns={
 })
 
 # 5. Clean data
+def report(step, before, after):
+    print(f"  {step:<45} {before:>7} -> {after:>7}  (removed {before - after})")
+
+print("\nCleaning steps:")
+
+n = len(games)
 games = games.drop_duplicates(subset="app_id")
-games = games.dropna(subset=[
-    "name", "genres", "price", "avg_hours"
-])
+report("drop duplicate app_id", n, len(games))
 
-games = games[
-    (games["price"] > 0) &
-    (games["avg_hours"] > 0) &
-    (games["genres"].str.strip() != "")
-].copy()
+n = len(games)
+games = games.dropna(subset=["name", "genres", "price", "avg_hours"])
+report("drop missing name/genres/price/playtime", n, len(games))
 
-# Convert minutes to hours
+n = len(games)
+games = games[games["price"] > 0].copy()
+report("price > 0 (excludes free-to-play)", n, len(games))
+
+n = len(games)
+games = games[games["avg_hours"] > 0].copy()
+report("avg playtime > 0 (has tracked playtime)", n, len(games))
+
+# Keep only real game genres; drop software apps and non-genre labels
+GAME_GENRES = {
+    "Action", "Adventure", "Casual", "Indie", "Massively Multiplayer",
+    "RPG", "Racing", "Simulation", "Sports", "Strategy",
+}
+
+def clean_genres(text):
+    genres = [g.strip() for g in str(text).split(",")]
+    return ",".join(g for g in genres if g in GAME_GENRES)
+
+games["genres"] = games["genres"].apply(clean_genres)
+
+n = len(games)
+games = games[games["genres"] != ""].copy()
+report("has at least one game genre (drops software)", n, len(games))
+
 games["avg_hours"] = games["avg_hours"] / 60
 games["median_hours"] = games["median_hours"] / 60
-
-# Keep missing tags as empty strings
-games["tags"] = games["tags"].fillna("")
 
 # 6. Save the cleaned dataset
 games.to_csv(
@@ -109,39 +131,3 @@ print(
 )
 
 
-
-# Only include games with at least 20 reviews
-games_filtered = games[
-    (games["positive"] + games["negative"]) >= 20
-].copy()
-
-# Calculate value: hours played per dollar
-games_filtered["hours_per_dollar"] = (
-    games_filtered["avg_hours"] / games_filtered["price"]
-)
-
-# Separate games into individual genres
-genre_data = games_filtered.assign(
-    genre=games_filtered["genres"].str.split(",")
-).explode("genre")
-
-genre_data["genre"] = genre_data["genre"].str.strip()
-
-# Compare median value across genres
-genre_results = genre_data.groupby("genre").agg(
-    game_count=("app_id", "nunique"),
-    median_price=("price", "median"),
-    median_hours=("avg_hours", "median"),
-    median_value=("hours_per_dollar", "median")
-)
-
-# Require at least 50 games per genre
-genre_results = genre_results[
-    genre_results["game_count"] >= 50
-]
-
-print(
-    genre_results.sort_values(
-        "median_value", ascending=False
-    ).round(2).to_string()
-)
